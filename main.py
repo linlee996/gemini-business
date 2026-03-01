@@ -63,7 +63,8 @@ from core.account import (
     reload_accounts,
     update_accounts_config as _update_accounts_config,
     delete_account as _delete_account,
-    update_account_disabled_status as _update_account_disabled_status
+    update_account_disabled_status as _update_account_disabled_status,
+    cleanup_expired_accounts,
 )
 # 导入模型配置模块（抗截断功能）
 from core.model_config import (
@@ -255,7 +256,28 @@ async def _reload_accounts_after_register(task):
     except Exception as e:
         logger.error(f"[REGISTER] 注册完成后重载失败: {str(e)}")
 
+# ---------- 账户钩子 ----------
+async def _cleanup_expired_accounts_before_auto_register():
+    """自动注册前清理过期超2天账户，并重载账户配置。"""
+    if not config.auto_register.cleanup_expired_accounts_enabled:
+        return
+
+    try:
+        removed_count = cleanup_expired_accounts(expired_days=2)
+        if removed_count <= 0:
+            return
+
+        current_count = _reload_accounts_internal("[REGISTER][CLEANUP]")
+        logger.info(
+            "[REGISTER][CLEANUP] 自动清理完成，删除账户 %s 个，当前账户数=%s",
+            removed_count,
+            current_count,
+        )
+    except Exception as e:
+        logger.error(f"[REGISTER][CLEANUP] 自动清理失败: {e}")
+
 # ---------- 常量定义 ----------
+
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
 # ---------- 多账户支持 ----------
@@ -409,6 +431,7 @@ async def startup_event():
             logger.info("[SYSTEM] 账户过期检查轮询已启动（间隔: 30分钟）")
             register_service = get_register_service()
             register_service.set_on_task_finished(_reload_accounts_after_register)
+            register_service.set_on_before_auto_register(_cleanup_expired_accounts_before_auto_register)
             asyncio.create_task(register_service.start_cron_polling())
             logger.info("[SYSTEM] 自动注册定时任务已启动")
         except Exception as e:
@@ -916,7 +939,9 @@ async def admin_get_settings(request: Request):
         },
         "auto_register": {
             "enabled": config.auto_register.enabled,
-            "cron": config.auto_register.cron
+            "cron": config.auto_register.cron,
+            "task_history_limit": config.auto_register.task_history_limit,
+            "cleanup_expired_accounts_enabled": config.auto_register.cleanup_expired_accounts_enabled
         }
     }
 

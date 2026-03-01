@@ -193,6 +193,7 @@ class RegisterService:
         self._cron_cache: Optional[Dict[str, Any]] = None
         self._stop_requested = False  # 停止标志
         self._on_task_finished: Optional[Callable[[RegisterTask], Awaitable[None]]] = None
+        self._on_before_auto_register: Optional[Callable[[], Awaitable[None]]] = None
         # 数据目录配置（与 main.py 保持一致）
         if os.path.exists("/data"):
             self.output_dir = Path("/data")
@@ -209,6 +210,37 @@ class RegisterService:
     def set_on_task_finished(self, callback: Optional[Callable[[RegisterTask], Awaitable[None]]]):
         """设置注册任务完成回调（用于触发热更新）"""
         self._on_task_finished = callback
+
+    def set_on_before_auto_register(self, callback: Optional[Callable[[], Awaitable[None]]]):
+        """设置自动注册触发前回调（用于执行清理等预处理）。"""
+        self._on_before_auto_register = callback
+
+    def _get_task_history_limit(self) -> int:
+        """读取任务历史保留上限，异常时回退默认值。"""
+        try:
+            limit = int(getattr(config.auto_register, "task_history_limit", 10))
+            return max(limit, 1)
+        except Exception:
+            return 10
+
+    def _trim_task_history(self):
+        """裁剪历史任务，避免长期运行时任务记录无限增长。"""
+        limit = self._get_task_history_limit()
+        if len(self._tasks) <= limit:
+            return
+
+        sorted_task_ids = sorted(self._tasks.keys(), key=lambda tid: self._tasks[tid].created_at)
+        removed = 0
+        for task_id in sorted_task_ids:
+            if len(self._tasks) <= limit:
+                break
+            if task_id == self._current_task_id:
+                continue
+            if self._tasks.pop(task_id, None) is not None:
+                removed += 1
+
+        if removed:
+            logger.info(f"[REGISTER] 已裁剪历史任务 {removed} 条，当前保留 {len(self._tasks)} 条")
 
     @property
     def auth_config(self) -> GeminiAuthConfig:
@@ -371,6 +403,7 @@ class RegisterService:
         )
         self._tasks[task.id] = task
         self._current_task_id = task.id
+        self._trim_task_history()
         
         # 在后台线程执行注册
         asyncio.create_task(self._run_register_async(task))
@@ -414,6 +447,7 @@ class RegisterService:
             task.finished_at = time.time()
             self._current_task_id = None
             self._stop_requested = False  # 重置停止标志
+            self._trim_task_history()
             if self._on_task_finished:
                 try:
                     await self._on_task_finished(task)
@@ -432,6 +466,12 @@ class RegisterService:
 
     async def _start_auto_register(self):
         """按配置启动一次自动注册任务"""
+        if self._on_before_auto_register:
+            try:
+                await self._on_before_auto_register()
+            except Exception as e:
+                logger.error(f"[REGISTER] 自动注册预处理失败: {e}")
+
         count = config.basic.register_number
         if count < 1:
             return

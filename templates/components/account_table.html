@@ -14,7 +14,7 @@
     <tbody>
         {% if accounts_data %}
             {% for account in accounts_data %}
-            <tr style="opacity: {{ account.row_opacity }};">
+            <tr style="opacity: {{ account.row_opacity }};" data-account-id="{{ account.account_id }}" data-is-expired="{{ 'true' if account.is_expired else 'false' }}">
                 <td data-label="账号ID">
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <span class="status-dot" style="background-color: {{ account.dot_color }};"></span>

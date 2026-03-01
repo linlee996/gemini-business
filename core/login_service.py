@@ -19,6 +19,7 @@ from typing import Optional, List, Dict, Any
 
 from dotenv import load_dotenv
 
+from core.config import config
 from util.gemini_auth_utils import GeminiAuthConfig, GeminiAuthHelper, GeminiAuthFlow
 
 # 加载环境变量
@@ -82,6 +83,33 @@ class LoginService:
         # 这样前端修改邮箱配置后热更新能立即生效
         pass
 
+    def _get_task_history_limit(self) -> int:
+        """读取任务历史保留上限，异常时回退默认值。"""
+        try:
+            limit = int(getattr(config.auto_register, "task_history_limit", 10))
+            return max(limit, 1)
+        except Exception:
+            return 10
+
+    def _trim_task_history(self):
+        """裁剪历史任务，避免长期运行时任务记录无限增长。"""
+        limit = self._get_task_history_limit()
+        if len(self._tasks) <= limit:
+            return
+
+        sorted_task_ids = sorted(self._tasks.keys(), key=lambda tid: self._tasks[tid].created_at)
+        removed = 0
+        for task_id in sorted_task_ids:
+            if len(self._tasks) <= limit:
+                break
+            if task_id == self._current_task_id:
+                continue
+            if self._tasks.pop(task_id, None) is not None:
+                removed += 1
+
+        if removed:
+            logger.info(f"[LOGIN] 已裁剪历史任务 {removed} 条，当前保留 {len(self._tasks)} 条")
+
     @property
     def auth_config(self) -> GeminiAuthConfig:
         """每次访问时动态获取最新配置，支持热更新"""
@@ -140,7 +168,6 @@ class LoginService:
             auth_flow = GeminiAuthFlow(self.auth_config, self.auth_helper)
 
             # 从配置读取重试次数（艹，不能写死参数！）
-            from core.config import config
             max_retries = config.retry.max_verification_retries if config.retry.verification_retry_enabled else 1
             retry_interval = config.retry.verification_retry_interval_seconds
 
@@ -168,10 +195,10 @@ class LoginService:
 
             # 更新配置
             config_data = result["config"]
-            config = self._update_account_config(email, config_data)
+            updated_config = self._update_account_config(email, config_data)
 
             logger.info(f"✅ 登录刷新成功: {email}")
-            return {"email": email, "success": True, "config": config, "error": None}
+            return {"email": email, "success": True, "config": updated_config, "error": None}
 
         except Exception as e:
             logger.error(f"❌ 登录刷新异常 [{email}]: {e}")
@@ -190,6 +217,7 @@ class LoginService:
         )
         self._tasks[task.id] = task
         self._current_task_id = task.id
+        self._trim_task_history()
 
         # 在后台线程执行登录刷新
         asyncio.create_task(self._run_login_async(task))
@@ -223,6 +251,7 @@ class LoginService:
         finally:
             task.finished_at = time.time()
             self._current_task_id = None
+            self._trim_task_history()
 
     def get_task(self, task_id: str) -> Optional[LoginTask]:
         """获取任务状态"""

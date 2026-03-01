@@ -360,6 +360,67 @@ def get_account_id(acc: dict, index: int) -> str:
     return acc.get("id", f"account_{index}")
 
 
+def cleanup_expired_accounts(expired_days: int = 2) -> int:
+    """清理过期超过指定天数的账户，并返回删除数量。"""
+    if expired_days < 0:
+        raise ValueError("expired_days 不能小于 0")
+
+    # 当使用 ACCOUNTS_CONFIG 环境变量时，账户来源为只读，跳过自动清理。
+    if os.environ.get("ACCOUNTS_CONFIG"):
+        logger.info("[CONFIG] 检测到 ACCOUNTS_CONFIG 环境变量，跳过过期账户自动清理")
+        return 0
+
+    if not os.path.exists(ACCOUNTS_FILE):
+        return 0
+
+    try:
+        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            accounts_data = json.load(f) or []
+    except Exception as e:
+        logger.warning(f"[CONFIG] 读取账户文件失败，跳过自动清理: {e}")
+        return 0
+
+    if not accounts_data:
+        return 0
+
+    beijing_tz = timezone(timedelta(hours=8))
+    cutoff = datetime.now(beijing_tz) - timedelta(days=expired_days)
+    filtered_accounts = []
+    removed_ids: List[str] = []
+
+    for i, acc in enumerate(accounts_data, 1):
+        expires_at = acc.get("expires_at")
+        if not expires_at:
+            filtered_accounts.append(acc)
+            continue
+
+        try:
+            expire_time = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
+            expire_time = expire_time.replace(tzinfo=beijing_tz)
+        except Exception:
+            # 时间格式异常时不做删除，避免误删。
+            filtered_accounts.append(acc)
+            continue
+
+        if expire_time <= cutoff:
+            removed_ids.append(get_account_id(acc, i))
+        else:
+            filtered_accounts.append(acc)
+
+    removed_count = len(removed_ids)
+    if removed_count == 0:
+        return 0
+
+    save_accounts_to_file(filtered_accounts)
+    logger.info(
+        "[CONFIG] 自动清理过期账户完成: 删除 %s 个（阈值: 过期超过 %s 天） | 账户=%s",
+        removed_count,
+        expired_days,
+        ", ".join(removed_ids),
+    )
+    return removed_count
+
+
 def load_multi_account_config(
     http_client,
     user_agent: str,

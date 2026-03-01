@@ -10,6 +10,8 @@ import subprocess
 import time
 import logging
 import random
+import signal
+import tempfile
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
@@ -23,6 +25,77 @@ from core.config import config
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger("gemini.auth_utils")
+
+
+def _safe_quit_driver(driver) -> None:
+    """尽量安全关闭 Selenium driver，避免残留进程。"""
+    if not driver:
+        return
+
+    try:
+        driver.quit()
+    except Exception as e:
+        logger.warning(f"[AUTH] driver.quit() 异常: {e}")
+
+
+def _kill_chrome_processes_by_profile(profile_dir: Optional[str]) -> None:
+    """按 user-data-dir 定位并清理残留 Chrome/ChromeDriver 进程（Linux）。"""
+    if not profile_dir or os.name != "posix":
+        return
+
+    proc_root = "/proc"
+    if not os.path.isdir(proc_root):
+        return
+
+    profile_dir = os.path.realpath(profile_dir)
+    target_pids: List[int] = []
+
+    for entry in os.scandir(proc_root):
+        if not entry.name.isdigit():
+            continue
+
+        cmdline_path = os.path.join(proc_root, entry.name, "cmdline")
+        try:
+            with open(cmdline_path, "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        if profile_dir in cmdline:
+            target_pids.append(int(entry.name))
+
+    if not target_pids:
+        return
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        remaining: List[int] = []
+        for pid in target_pids:
+            try:
+                os.kill(pid, sig)
+                remaining.append(pid)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                continue
+
+        if not remaining:
+            break
+
+        time.sleep(0.3)
+        target_pids = [pid for pid in remaining if os.path.exists(f"/proc/{pid}")]
+        if not target_pids:
+            break
+
+
+def _cleanup_profile_dir(profile_dir: Optional[str]) -> None:
+    """删除临时 Chrome 用户目录，避免缓存长期堆积。"""
+    if not profile_dir:
+        return
+
+    try:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"[AUTH] 清理临时 profile 失败: {e}")
 
 
 # ==================== 拟人化工具函数 ====================
@@ -1122,6 +1195,7 @@ class GeminiAuthFlow:
             excluded_proxies = set()
 
         driver = None
+        chrome_profile_dir: Optional[str] = None
         selected_proxy = None  # 记录使用的代理
         proxy_pool = None  # 记录代理池实例
 
@@ -1219,7 +1293,15 @@ class GeminiAuthFlow:
                 options.add_argument(f'--proxy-server={selected_proxy}')
                 logger.info(f"🌐 Chrome 启动使用代理: {ProxyPool._mask_proxy(selected_proxy)}")
 
-            driver = uc.Chrome(options=options, use_subprocess=True, version_main=major)
+            # 为每次会话分配独立 profile，便于兜底清理残留进程和缓存
+            chrome_profile_dir = tempfile.mkdtemp(prefix="gemini-chrome-profile-")
+            options.add_argument(f"--user-data-dir={chrome_profile_dir}")
+            options.add_argument("--remote-debugging-port=0")
+            options.add_argument("--no-first-run")
+            options.add_argument("--no-default-browser-check")
+
+            # use_subprocess=False 可减少 uc 子进程残留导致的内存持续增长
+            driver = uc.Chrome(options=options, use_subprocess=False, version_main=major)
             wait = WebDriverWait(driver, 30)
 
             # 2. 访问登录页（加上随机延迟）
@@ -1362,11 +1444,9 @@ class GeminiAuthFlow:
                 "used_proxy": selected_proxy
             }
         finally:
-            if driver:
-                try:
-                    driver.quit()
-                except:
-                    pass
+            _safe_quit_driver(driver)
+            _kill_chrome_processes_by_profile(chrome_profile_dir)
+            _cleanup_profile_dir(chrome_profile_dir)
 
 
     def extract_config_with_retry(self, driver, max_retries: int = 3) -> Dict[str, Any]:

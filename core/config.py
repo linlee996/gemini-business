@@ -86,6 +86,8 @@ class AutoRegisterConfig(BaseModel):
     """自动注册配置"""
     enabled: bool = Field(default=False, description="是否启用自动注册")
     cron: str = Field(default="", description="Cron 表达式（5段）")
+    task_history_limit: int = Field(default=10, ge=1, le=200, description="任务历史保留数量")
+    cleanup_expired_accounts_enabled: bool = Field(default=False, description="是否启用自动清理过期超过2天的账户")
 
 
 class SecurityConfig(BaseModel):
@@ -227,9 +229,22 @@ class ConfigManager:
         enabled_value = auto_register_data.get("enabled")
         if enabled_value is None:
             enabled_value = os.getenv("AUTO_REGISTER_ENABLED", "").lower() in ["1", "true", "yes", "y", "on"]
+
+        task_history_limit_value = auto_register_data.get("task_history_limit")
+        if task_history_limit_value is None:
+            task_history_limit_value = int(os.getenv("AUTO_REGISTER_TASK_HISTORY_LIMIT", 10))
+
+        cleanup_expired_accounts_enabled_value = auto_register_data.get("cleanup_expired_accounts_enabled")
+        if cleanup_expired_accounts_enabled_value is None:
+            cleanup_expired_accounts_enabled_value = os.getenv(
+                "AUTO_REGISTER_CLEANUP_EXPIRED_ACCOUNTS_ENABLED", ""
+            ).lower() in ["1", "true", "yes", "y", "on"]
+
         auto_register_config = AutoRegisterConfig(
             enabled=enabled_value,
-            cron=auto_register_data.get("cron") or os.getenv("AUTO_REGISTER_CRON", "")
+            cron=auto_register_data.get("cron") or os.getenv("AUTO_REGISTER_CRON", ""),
+            task_history_limit=task_history_limit_value,
+            cleanup_expired_accounts_enabled=cleanup_expired_accounts_enabled_value
         )
 
         # 5. 构建完整配置

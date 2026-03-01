@@ -24,6 +24,7 @@ wheels/
 venv/
 env/
 ENV/
+.venv/**
 
 # IDE
 .vscode/
@@ -38,6 +39,7 @@ ENV/
 data/stats.json
 data/settings.yaml
 accounts.json
+settings.yaml
 
 # Generated files
 data/images/

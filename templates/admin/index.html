@@ -113,6 +113,9 @@
                     <button class="btn" onclick="showRegisterModal()" style="background: #0071e3; color: white;">
                         🚀 批量注册账户
                     </button>
+                    <button class="btn" id="refresh-expired-btn" onclick="refreshExpiredAccounts()" style="background: #34c759; color: white;">
+                        ♻️ 批量刷新过期账户
+                    </button>
                     <div id="register-progress" style="display: none; flex: 1; min-width: 300px;">
                         <div style="display: flex; gap: 16px; align-items: center;">
                             <div style="flex: 1;">
@@ -581,9 +584,25 @@
                             </div>
                             <div class="setting-item">
                                 <label>Cron 表达式（5段）</label>
-                                <input type="text" id="setting-auto-register-cron" placeholder="如 0 3 * * *" />
+                                <input type="text" id="setting-auto-register-cron" placeholder="? 0 3 * * *" />
                                 <div style="margin-top: 4px; font-size: 11px; color: #6b6b6b;">
                                     分钟 小时 日 月 周（0=周日，1=周一）
+                                </div>
+                            </div>
+                            <div class="setting-item">
+                                <label>任务历史保留数量</label>
+                                <input type="number" id="setting-task-history-limit" min="1" max="200" />
+                                <div style="margin-top: 4px; font-size: 11px; color: #6b6b6b;">
+                                    超过上限会自动删除最早的已完成任务记录（默认 10）。
+                                </div>
+                            </div>
+                            <div class="setting-item">
+                                <label style="display: flex; align-items: center; gap: 8px;">
+                                    <input type="checkbox" id="setting-cleanup-expired-accounts-enabled" style="width: auto;" />
+                                    自动清理过期超 2 天账户
+                                </label>
+                                <div style="margin-top: 4px; font-size: 11px; color: #6b6b6b;">
+                                    仅在自动注册触发前执行清理。
                                 </div>
                             </div>
                         </div>
